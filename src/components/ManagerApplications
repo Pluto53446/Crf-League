@@ -1,0 +1,207 @@
+
+# 4. ManagerApplications.jsx — Admin section for approving/denying manager applications
+manager_applications = '''import React, { useState, useEffect } from 'react'
+import { supabase } from '../hooks/useSupabase'
+import { CheckCircle, XCircle, User, Shield, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react'
+
+const ManagerApplications = () => {
+  const [applications, setApplications] = useState([])
+  const [clubs, setClubs] = useState([])
+  const [takenClubs, setTakenClubs] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [message, setMessage] = useState(null)
+  const [selectedClub, setSelectedClub] = useState({})
+
+  useEffect(() => {
+    fetchData()
+  }, [])
+
+  const fetchData = async () => {
+    setLoading(true)
+    try {
+      const [{ data: apps }, { data: allClubs }, { data: managers }] = await Promise.all([
+        supabase.from('managers').select('*').eq('status', 'pending').order('created_at', { ascending: true }),
+        supabase.from('clubs').select('name').order('name'),
+        supabase.from('managers').select('club').eq('status', 'approved'),
+      ])
+      
+      setApplications(apps || [])
+      setClubs(allClubs?.map(c => c.name) || [])
+      setTakenClubs(managers?.map(m => m.club).filter(Boolean) || [])
+    } catch (err) {
+      console.error('Error fetching applications:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApprove = async (appId) => {
+    const club = selectedClub[appId]
+    if (!club) {
+      showMessage('Please select a club for this manager', 'error')
+      return
+    }
+
+    try {
+      // Update manager status and assign club
+      const { error: managerError } = await supabase
+        .from('managers')
+        .update({ status: 'approved', club })
+        .eq('id', appId)
+
+      if (managerError) throw managerError
+
+      // Initialize budget if not exists
+      const { error: budgetError } = await supabase
+        .from('club_budgets')
+        .upsert({ club_name: club, budget: 100000000, spent: 0, earned: 0 },
+          { onConflict: 'club_name' })
+
+      if (budgetError) throw budgetError
+
+      // Log the action
+      const app = applications.find(a => a.id === appId)
+      await supabase.from('manager_logs').insert([{
+        manager_id: appId,
+        manager_username: app?.username,
+        club,
+        action: 'budget_adjusted',
+        details: { type: 'manager_approved', initial_budget: 100000000 },
+      }])
+
+      showMessage(`Approved ${app?.username} for ${club}`, 'success')
+      setApplications(prev => prev.filter(a => a.id !== appId))
+      setTakenClubs(prev => [...prev, club])
+    } catch (err) {
+      showMessage('Failed to approve: ' + err.message, 'error')
+    }
+  }
+
+  const handleDeny = async (appId) => {
+    try {
+      const { error } = await supabase
+        .from('managers')
+        .update({ status: 'denied' })
+        .eq('id', appId)
+
+      if (error) throw error
+
+      const app = applications.find(a => a.id === appId)
+      showMessage(`Denied ${app?.username}`, 'success')
+      setApplications(prev => prev.filter(a => a.id !== appId))
+    } catch (err) {
+      showMessage('Failed to deny: ' + err.message, 'error')
+    }
+  }
+
+  const showMessage = (text, type) => {
+    setMessage({ text, type })
+    setTimeout(() => setMessage(null), 4000)
+  }
+
+  const availableClubs = clubs.filter(c => !takenClubs.includes(c))
+
+  return (
+    <div className="animate-fade-in">
+      <div style={{ marginBottom: '24px' }}>
+        <h2 style={{ fontSize: '1.5rem', fontWeight: 700, margin: '0 0 8px 0', fontFamily: 'Oswald, sans-serif' }}>
+          Manager Applications
+        </h2>
+        <p style={{ color: 'var(--crf-text-muted)', fontSize: '0.85rem', margin: 0 }}>
+          Review and approve pending manager requests
+        </p>
+      </div>
+
+      {message && (
+        <div style={{
+          position: 'fixed', top: '80px', right: '24px', zIndex: 1000,
+          padding: '16px 20px', borderRadius: '8px',
+          display: 'flex', alignItems: 'center', gap: '10px',
+          fontWeight: 600, fontSize: '0.875rem',
+          animation: 'slideIn 0.3s ease-out',
+          background: message.type === 'error' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+          border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)'}`,
+          color: message.type === 'error' ? '#ef4444' : '#22c55e',
+        }}>
+          {message.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+          {message.text}
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '60px' }}>
+          <Loader2 size={32} style={{ color: 'var(--crf-gold)', animation: 'spin 1s linear infinite' }} />
+        </div>
+      ) : applications.length === 0 ? (
+        <div className="crf-card" style={{ textAlign: 'center', padding: '60px', color: 'var(--crf-text-muted)' }}>
+          <User size={40} style={{ marginBottom: '16px', opacity: 0.5 }} />
+          <p>No pending applications.</p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {applications.map(app => (
+            <div key={app.id} className="crf-card" style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{
+                width: '48px', height: '48px', borderRadius: '12px',
+                background: 'linear-gradient(135deg, #e94560, #c73e54)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <User size={24} color="white" />
+              </div>
+              
+              <div style={{ flex: 1, minWidth: '200px' }}>
+                <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '2px' }}>
+                  {app.username}
+                </div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--crf-text-muted)' }}>
+                  {app.email || 'No email provided'} · Applied {new Date(app.created_at).toLocaleDateString()}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <select
+                  value={selectedClub[app.id] || ''}
+                  onChange={(e) => setSelectedClub(prev => ({ ...prev, [app.id]: e.target.value }))}
+                  className="crf-select"
+                  style={{ minWidth: '180px', padding: '10px 36px 10px 12px', fontSize: '0.85rem' }}
+                >
+                  <option value="">Select Club...</option>
+                  {availableClubs.map(club => (
+                    <option key={club} value={club}>{club}</option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={() => handleApprove(app.id)}
+                  className="crf-btn"
+                  style={{
+                    padding: '8px 16px', fontSize: '0.8rem',
+                    background: 'rgba(34, 197, 94, 0.2)', color: '#22c55e',
+                  }}
+                >
+                  <CheckCircle size={14} /> Approve
+                </button>
+
+                <button
+                  onClick={() => handleDeny(app.id)}
+                  className="crf-btn crf-btn-danger"
+                  style={{ padding: '8px 16px', fontSize: '0.8rem' }}
+                >
+                  <XCircle size={14} /> Deny
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default ManagerApplications
+'''
+
+with open('/mnt/agents/output/ManagerApplications.jsx', 'w') as f:
+    f.write(manager_applications)
+
+print("✅ ManagerApplications.jsx created")
